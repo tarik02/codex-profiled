@@ -52,7 +52,7 @@ func rootCommand() *cobra.Command {
 	deleteYes := false
 
 	root := &cobra.Command{
-		Use:           "codex-profile [profile] [--] [codex args...]",
+		Use:           "codex-profiled [profile] [--] [codex args...]",
 		Short:         "Run Codex with shared state and profile-specific auth",
 		Args:          cobra.ArbitraryArgs,
 		SilenceErrors: true,

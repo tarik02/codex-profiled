@@ -37,7 +37,7 @@ func mountProfileHome(mountpoint string, sharedHome string, authFile string) (*f
 	pathNode := pathfs.NewPathNodeFs(pfs, &pathfs.PathNodeFsOptions{})
 	server, _, err := nodefs.Mount(mountpoint, pathNode.Root(), &fuse.MountOptions{
 		FsName: sharedHome,
-		Name:   "codex-profile",
+		Name:   "codex-profiled",
 	}, nil)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func mountProfileHome(mountpoint string, sharedHome string, authFile string) (*f
 }
 
 func (p *profileHomeFS) String() string {
-	return "codex-profile"
+	return "codex-profiled"
 }
 
 func (p *profileHomeFS) SetDebug(debug bool) {

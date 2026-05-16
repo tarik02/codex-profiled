@@ -8,6 +8,8 @@ shared; account auth stays isolated per profile.
 
 ## Install
 
+Download binaries from [GitHub Releases](https://github.com/tarik02/codex-profiled/releases).
+
 ```sh
 nix run github:tarik02/codex-profiled
 ```
@@ -24,33 +26,33 @@ Codex itself is not bundled. Install `codex` separately.
 
 ```sh
 # pick or create a profile
-codex-profile
+codex-profiled
 
 # run with a profile
-codex-profile work
-codex-profile --profile work
+codex-profiled work
+codex-profiled --profile work
 
 # pass arguments to codex
-codex-profile work -- login
-codex-profile work -- --help
+codex-profiled work -- login
+codex-profiled work -- --help
 
 # inspect profiles
-codex-profile list
-codex-profile current
+codex-profiled list
+codex-profiled current
 
 # remember a profile for the current directory
-codex-profile set-default work
+codex-profiled set-default work
 
 # delete a profile
-codex-profile delete work
+codex-profiled delete work
 
 # check local setup
-codex-profile doctor
+codex-profiled doctor
 ```
 
 The `default` profile always exists and uses Codex's normal auth file.
 
-If a new profile has no auth yet, `codex-profile` can run `codex login` for it.
+If a new profile has no auth yet, `codex-profiled` can run `codex login` for it.
 
 ## Profile Selection
 
@@ -63,20 +65,20 @@ When no profile is passed, selection order is:
 Explicit CLI profiles always win:
 
 ```sh
-codex-profile work
-codex-profile --profile work
+codex-profiled work
+codex-profiled --profile work
 ```
 
 Set a directory default:
 
 ```sh
-codex-profile set-default work
+codex-profiled set-default work
 ```
 
 Show what would be used:
 
 ```sh
-codex-profile current --verbose
+codex-profiled current --verbose
 ```
 
 ## Files
