@@ -29,12 +29,13 @@ Codex itself is not bundled. Install `codex` separately.
 codex-profiled
 
 # run with a profile
-codex-profiled work
+codex-profiled @work
 codex-profiled --profile work
 
 # pass arguments to codex
-codex-profiled work -- login
-codex-profiled work -- --help
+codex-profiled resume abc
+codex-profiled @work -- login
+codex-profiled @work -- --help
 
 # inspect profiles
 codex-profiled list
@@ -65,9 +66,12 @@ When no profile is passed, selection order is:
 Explicit CLI profiles always win:
 
 ```sh
-codex-profiled work
+codex-profiled @work
 codex-profiled --profile work
 ```
+
+Bare arguments are passed to Codex. Use `@profile` or `--profile` to select a
+profile for one run.
 
 Set a directory default:
 

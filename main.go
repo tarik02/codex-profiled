@@ -52,7 +52,7 @@ func rootCommand() *cobra.Command {
 	deleteYes := false
 
 	root := &cobra.Command{
-		Use:           "codex-profiled [profile] [--] [codex args...]",
+		Use:           "codex-profiled [@profile] [--] [codex args...]",
 		Short:         "Run Codex with shared state and profile-specific auth",
 		Args:          cobra.ArbitraryArgs,
 		SilenceErrors: true,
@@ -251,11 +251,15 @@ func runCodex(cmd *cobra.Command, opts options, args []string, allowArgsProfile 
 	opts.profile = resolved.name
 	argProfile := argsProfile(args)
 	if opts.profile == "" {
-		profile, err := chooseProfile(opts.profileRoot)
-		if err != nil {
-			return err
+		if len(args) > 0 {
+			opts.profile = "default"
+		} else {
+			profile, err := chooseProfile(opts.profileRoot)
+			if err != nil {
+				return err
+			}
+			opts.profile = profile
 		}
-		opts.profile = profile
 	} else if allowArgsProfile && opts.profile == argProfile {
 		args = args[1:]
 	}
@@ -346,8 +350,8 @@ func resolveProfile(opts options, args []string, allowArgsProfile bool) (resolve
 }
 
 func argsProfile(args []string) string {
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		return args[0]
+	if len(args) > 0 && strings.HasPrefix(args[0], "@") {
+		return strings.TrimPrefix(args[0], "@")
 	}
 	return ""
 }
