@@ -1,0 +1,283 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"syscall"
+)
+
+var (
+	knownSharedDirectories = []string{
+		"sessions",
+		"archived_sessions",
+		"sqlite",
+		"shell_snapshots",
+		"worktrees",
+		"skills",
+		"plugins",
+		"cache",
+		"logs",
+	}
+
+	privateEntryNames = map[string]struct{}{
+		"auth.json":         {},
+		"models_cache.json": {},
+	}
+
+	shadowLocalEntryNames = map[string]struct{}{
+		"log":      {},
+		"memories": {},
+		"tmp":      {},
+	}
+
+	skippedSharedEntryNames = map[string]struct{}{
+		"auth-profiles": {},
+	}
+
+	// optionalLocalEntryNames are symlinked from shared when missing, but an
+	// existing real file in the shadow home is preserved.
+	optionalLocalEntryNames = map[string]struct{}{
+		"config.toml": {},
+	}
+
+	emptyAuthJSON = []byte("{}")
+)
+
+type linkState int
+
+const (
+	linkMissing linkState = iota
+	linkNotSymlink
+	linkSymlink
+)
+
+type shadowHomeLayout struct {
+	sharedHomePath    string
+	effectiveHomePath string
+}
+
+func shadowHomeForProfile(sharedHome, profile string) (string, error) {
+	if root := os.Getenv("CODEX_SHADOW_ROOT"); root != "" {
+		expanded := os.ExpandEnv(root)
+		if expanded == "" {
+			return "", fmt.Errorf("CODEX_SHADOW_ROOT is empty")
+		}
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(abs, profile), nil
+	}
+
+	parent := filepath.Dir(sharedHome)
+	return filepath.Join(parent, ".codex-"+profile), nil
+}
+
+func resolveShadowHomeLayout(opts options, profile string) (shadowHomeLayout, error) {
+	shadowHome, err := shadowHomeForProfile(opts.sharedHome, profile)
+	if err != nil {
+		return shadowHomeLayout{}, err
+	}
+	shadowHome, err = filepath.Abs(shadowHome)
+	if err != nil {
+		return shadowHomeLayout{}, err
+	}
+
+	return shadowHomeLayout{
+		sharedHomePath:    opts.sharedHome,
+		effectiveHomePath: shadowHome,
+	}, nil
+}
+
+func materializeShadowHome(layout shadowHomeLayout) error {
+	if layout.sharedHomePath == layout.effectiveHomePath {
+		return fmt.Errorf("shadow home path must differ from shared home path")
+	}
+
+	if err := os.MkdirAll(layout.sharedHomePath, 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(layout.effectiveHomePath, 0o700); err != nil {
+		return err
+	}
+
+	for _, directory := range knownSharedDirectories {
+		path := filepath.Join(layout.sharedHomePath, directory)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return err
+		}
+	}
+
+	sharedEntries, err := os.ReadDir(layout.sharedHomePath)
+	if err != nil {
+		return err
+	}
+
+	entries := make(map[string]struct{}, len(knownSharedDirectories)+len(sharedEntries))
+	for _, directory := range knownSharedDirectories {
+		entries[directory] = struct{}{}
+	}
+	for _, entry := range sharedEntries {
+		name := entry.Name()
+		if _, private := privateEntryNames[name]; private {
+			continue
+		}
+		if _, local := shadowLocalEntryNames[name]; local {
+			continue
+		}
+		if _, skip := skippedSharedEntryNames[name]; skip {
+			continue
+		}
+		if _, optional := optionalLocalEntryNames[name]; optional {
+			state, _, err := readLinkState(filepath.Join(layout.effectiveHomePath, name))
+			if err != nil {
+				return err
+			}
+			if state == linkNotSymlink {
+				continue
+			}
+		}
+		entries[name] = struct{}{}
+	}
+
+	if err := removePrivateSymlink(layout.effectiveHomePath, "models_cache.json"); err != nil {
+		return err
+	}
+	for name := range skippedSharedEntryNames {
+		if err := removePrivateSymlink(layout.effectiveHomePath, name); err != nil {
+			return err
+		}
+	}
+
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	for _, name := range names {
+		if _, private := privateEntryNames[name]; private {
+			continue
+		}
+		if _, skip := skippedSharedEntryNames[name]; skip {
+			continue
+		}
+		if err := ensureSharedSymlink(layout.effectiveHomePath, layout.sharedHomePath, name); err != nil {
+			return err
+		}
+	}
+
+	return ensureShadowAuthIsPrivate(layout.effectiveHomePath)
+}
+
+func shadowHomeExists(layout shadowHomeLayout) bool {
+	if layout.sharedHomePath == layout.effectiveHomePath {
+		return false
+	}
+	info, err := os.Stat(layout.effectiveHomePath)
+	return err == nil && info.IsDir()
+}
+
+func readLinkState(linkPath string) (linkState, string, error) {
+	target, err := os.Readlink(linkPath)
+	if err == nil {
+		return linkSymlink, target, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return linkMissing, "", nil
+	}
+	if isNotSymlinkError(err) {
+		return linkNotSymlink, "", nil
+	}
+	return linkMissing, "", err
+}
+
+func isNotSymlinkError(err error) bool {
+	if errors.Is(err, syscall.EINVAL) {
+		return true
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return errors.Is(pathErr.Err, syscall.EINVAL)
+	}
+	return false
+}
+
+func removePrivateSymlink(shadowPath, entryName string) error {
+	privatePath := filepath.Join(shadowPath, entryName)
+	state, _, err := readLinkState(privatePath)
+	if err != nil {
+		return err
+	}
+	if state == linkSymlink {
+		return os.Remove(privatePath)
+	}
+	return nil
+}
+
+func ensureSharedSymlink(shadowPath, sharedPath, entryName string) error {
+	target := filepath.Join(sharedPath, entryName)
+	link := filepath.Join(shadowPath, entryName)
+
+	state, existingTarget, err := readLinkState(link)
+	if err != nil {
+		return err
+	}
+
+	switch state {
+	case linkNotSymlink:
+		return fmt.Errorf("cannot create shadow home because %q already exists and is not a symlink", link)
+	case linkMissing:
+		return os.Symlink(target, link)
+	case linkSymlink:
+		resolvedExisting := filepath.Clean(filepath.Join(filepath.Dir(link), existingTarget))
+		if resolvedExisting == filepath.Clean(target) {
+			return nil
+		}
+		if err := os.Remove(link); err != nil {
+			return err
+		}
+		return os.Symlink(target, link)
+	default:
+		return fmt.Errorf("unexpected link state for %q", link)
+	}
+}
+
+func ensureShadowAuthIsPrivate(shadowPath string) error {
+	authPath := filepath.Join(shadowPath, "auth.json")
+	state, _, err := readLinkState(authPath)
+	if err != nil {
+		return err
+	}
+	if state == linkSymlink {
+		return fmt.Errorf("shadow auth file %q must be a real file, not a symlink", authPath)
+	}
+	return nil
+}
+
+func ensureShadowAuth(shadowAuthPath string) error {
+	if !fileExists(shadowAuthPath) {
+		return writeAuthPlaceholder(shadowAuthPath)
+	}
+	if emptyFile(shadowAuthPath) {
+		return writeAuthPlaceholder(shadowAuthPath)
+	}
+	return nil
+}
+
+func emptyFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Size() == 0
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func writeAuthPlaceholder(path string) error {
+	return os.WriteFile(path, emptyAuthJSON, 0o600)
+}

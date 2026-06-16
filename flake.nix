@@ -5,7 +5,12 @@
 
   outputs = { self, nixpkgs }:
     let
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
@@ -17,7 +22,7 @@
             pname = "codex-profiled";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-6vaEOGaj2CssAdEvabxP+2s3M86ZJ9XSlAL++w1Iqx8=";
+            vendorHash = "sha256-fMhID8PRnSKh1vdbsih7IRz59eXEbQuWRuYr+aZz3TI=";
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
 
@@ -47,9 +52,6 @@
 
               $out/bin/codex-profiled completion fish > \
                 $out/share/fish/vendor_completions.d/codex-profiled.fish
-
-              wrapProgram $out/bin/codex-profiled \
-                --prefix PATH : /run/wrappers/bin:${pkgs.lib.makeBinPath [ pkgs.fuse3 ]}
             '';
           };
         });
@@ -70,7 +72,6 @@
         in {
           default = pkgs.mkShell {
             packages = [
-              pkgs.fuse3
               pkgs.go
               pkgs.gopls
             ];

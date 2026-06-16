@@ -18,7 +18,6 @@ import (
 
 type options struct {
 	profile     string
-	profileRoot string
 	sharedHome  string
 	codexBinary string
 }
@@ -63,7 +62,6 @@ func rootCommand() *cobra.Command {
 	}
 
 	root.PersistentFlags().StringVarP(&opts.profile, "profile", "p", opts.profile, "profile name")
-	root.PersistentFlags().StringVar(&opts.profileRoot, "profile-root", opts.profileRoot, "profile root (default: CODEX_HOME/auth-profiles)")
 	root.PersistentFlags().StringVar(&opts.codexBinary, "codex-binary", opts.codexBinary, "codex executable")
 
 	list := &cobra.Command{
@@ -71,11 +69,10 @@ func rootCommand() *cobra.Command {
 		Short: "List profiles",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fillDerivedDefaults(&opts)
 			if err := canonicalizeOptions(&opts); err != nil {
 				return err
 			}
-			profiles, err := listProfiles(opts.profileRoot)
+			profiles, err := listProfiles(opts)
 			if err != nil {
 				return err
 			}
@@ -131,7 +128,6 @@ func rootCommand() *cobra.Command {
 		Short: "Set the current directory's default profile",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fillDerivedDefaults(&opts)
 			if err := canonicalizeOptions(&opts); err != nil {
 				return err
 			}
@@ -149,10 +145,9 @@ func rootCommand() *cobra.Command {
 
 	deleteProfile := &cobra.Command{
 		Use:   "delete [profile]",
-		Short: "Delete a profile auth file",
+		Short: "Delete a profile shadow home",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fillDerivedDefaults(&opts)
 			if err := canonicalizeOptions(&opts); err != nil {
 				return err
 			}
@@ -162,7 +157,7 @@ func rootCommand() *cobra.Command {
 				profile = args[0]
 			} else {
 				var err error
-				profile, err = chooseDeletableProfile(opts.profileRoot)
+				profile, err = chooseDeletableProfile(opts)
 				if err != nil {
 					return err
 				}
@@ -213,7 +208,16 @@ func rootCommand() *cobra.Command {
 		},
 	}
 
-	root.AddCommand(list, current, setDefault, deleteProfile, doctor)
+	materialize := &cobra.Command{
+		Use:   "materialize [@profile]",
+		Short: "Create or refresh the profile shadow home symlinks",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMaterialize(cmd, opts, args)
+		},
+	}
+
+	root.AddCommand(list, current, setDefault, deleteProfile, doctor, materialize)
 	return root
 }
 
@@ -225,7 +229,6 @@ func defaultOptions() options {
 
 	return options{
 		sharedHome:  envOrDefault("CODEX_HOME", filepath.Join(home, ".codex")),
-		profileRoot: os.Getenv("CODEX_PROFILE_ROOT"),
 		codexBinary: envOrDefault("CODEX_BINARY", "codex"),
 	}
 }
@@ -238,8 +241,6 @@ func envOrDefault(name, fallback string) string {
 }
 
 func runCodex(cmd *cobra.Command, opts options, args []string, allowArgsProfile bool) error {
-	fillDerivedDefaults(&opts)
-
 	if err := canonicalizeOptions(&opts); err != nil {
 		return err
 	}
@@ -254,7 +255,7 @@ func runCodex(cmd *cobra.Command, opts options, args []string, allowArgsProfile 
 		if len(args) > 0 {
 			opts.profile = "default"
 		} else {
-			profile, err := chooseProfile(opts.profileRoot)
+			profile, err := chooseProfile(opts)
 			if err != nil {
 				return err
 			}
@@ -278,36 +279,35 @@ func runCodex(cmd *cobra.Command, opts options, args []string, allowArgsProfile 
 	}
 
 	if opts.profile == "default" {
-		return runCodexProcess(opts.sharedHome, codexBinary, args)
+		return runCodexProcess(opts.sharedHome, opts.profile, codexBinary, args)
 	}
 
-	authFile := authPathForProfile(opts, opts.profile)
-	if err := os.MkdirAll(opts.profileRoot, 0o700); err != nil {
+	layout, err := resolveShadowHomeLayout(opts, opts.profile)
+	if err != nil {
 		return err
 	}
-	if err := ensureFile(authFile, 0o600); err != nil {
-		return err
+	if err := materializeShadowHome(layout); err != nil {
+		return fmt.Errorf("failed to materialize shadow home: %w", err)
 	}
 
-	if len(args) == 0 && emptyFile(authFile) && cmd.InOrStdin() == os.Stdin {
+	authFile := filepath.Join(layout.effectiveHomePath, "auth.json")
+	if len(args) == 0 && (!fileExists(authFile) || emptyFile(authFile)) && cmd.InOrStdin() == os.Stdin {
 		loginArgs, err := chooseLoginArgs()
 		if err != nil {
 			return err
 		}
 		if len(loginArgs) > 0 {
-			if err := runWithMountedHome(opts, authFile, codexBinary, loginArgs); err != nil {
-				return err
+			if err := ensureShadowAuth(authFile); err != nil {
+				return fmt.Errorf("failed to prepare profile auth: %w", err)
 			}
+			return runCodexProcess(layout.effectiveHomePath, opts.profile, codexBinary, loginArgs)
+		}
+		if err := writeAuthPlaceholder(authFile); err != nil {
+			return err
 		}
 	}
 
-	return runWithMountedHome(opts, authFile, codexBinary, args)
-}
-
-func fillDerivedDefaults(opts *options) {
-	if opts.profileRoot == "" {
-		opts.profileRoot = filepath.Join(opts.sharedHome, "auth-profiles")
-	}
+	return runWithShadowHome(opts, opts.profile, codexBinary, args)
 }
 
 func canonicalizeOptions(opts *options) error {
@@ -316,15 +316,10 @@ func canonicalizeOptions(opts *options) error {
 	if err != nil {
 		return err
 	}
-	opts.profileRoot, err = filepath.Abs(opts.profileRoot)
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
 func resolveProfile(opts options, args []string, allowArgsProfile bool) (resolvedProfile, error) {
-	fillDerivedDefaults(&opts)
 	if err := canonicalizeOptions(&opts); err != nil {
 		return resolvedProfile{}, err
 	}
@@ -459,11 +454,14 @@ func setDefaultProfile(sharedHome string, dir string, profile string) (string, e
 }
 
 func deleteStoredProfile(opts options, profile string) (string, int, error) {
-	authPath := authPathForProfile(opts, profile)
-	if err := os.Remove(authPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", 0, fmt.Errorf("profile not found: %s", profile)
-		}
+	shadowHome, err := shadowHomeForProfile(opts.sharedHome, profile)
+	if err != nil {
+		return "", 0, err
+	}
+	if !fileExists(shadowHome) {
+		return "", 0, fmt.Errorf("profile not found: %s", profile)
+	}
+	if err := os.RemoveAll(shadowHome); err != nil {
 		return "", 0, err
 	}
 
@@ -471,7 +469,7 @@ func deleteStoredProfile(opts options, profile string) (string, int, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	return authPath, removedDefaults, nil
+	return shadowHome, removedDefaults, nil
 }
 
 func removeDefaultProfileRefs(sharedHome string, profile string) (int, error) {
@@ -514,11 +512,15 @@ func authPathForProfile(opts options, profile string) string {
 	if profile == "default" {
 		return filepath.Join(opts.sharedHome, "auth.json")
 	}
-	return filepath.Join(opts.profileRoot, profile+".auth.json")
+	shadowHome, err := shadowHomeForProfile(opts.sharedHome, profile)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(shadowHome, "auth.json")
 }
 
-func chooseProfile(profileRoot string) (string, error) {
-	profiles, err := listProfiles(profileRoot)
+func chooseProfile(opts options) (string, error) {
+	profiles, err := listProfiles(opts)
 	if err != nil {
 		return "", err
 	}
@@ -554,8 +556,8 @@ func chooseProfile(profileRoot string) (string, error) {
 	return selected, nil
 }
 
-func chooseDeletableProfile(profileRoot string) (string, error) {
-	profiles, err := listProfiles(profileRoot)
+func chooseDeletableProfile(opts options) (string, error) {
+	profiles, err := listProfiles(opts)
 	if err != nil {
 		return "", err
 	}
@@ -605,24 +607,60 @@ func chooseLoginArgs() ([]string, error) {
 	}
 }
 
-func listProfiles(profileRoot string) ([]string, error) {
-	entries, err := os.ReadDir(profileRoot)
+func listProfiles(opts options) ([]string, error) {
+	discovered, err := discoverProfileNames(opts.sharedHome)
+	if err != nil {
+		return nil, err
+	}
+	profiles := append([]string{"default"}, discovered...)
+	slices.Sort(profiles)
+	return profiles, nil
+}
+
+func discoverProfileNames(sharedHome string) ([]string, error) {
+	if root := os.Getenv("CODEX_SHADOW_ROOT"); root != "" {
+		expanded := os.ExpandEnv(root)
+		if expanded == "" {
+			return nil, fmt.Errorf("CODEX_SHADOW_ROOT is empty")
+		}
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			return nil, err
+		}
+		return discoverProfilesInDir(abs, func(name string) string {
+			return name
+		})
+	}
+
+	parent := filepath.Dir(sharedHome)
+	prefix := ".codex-"
+	return discoverProfilesInDir(parent, func(name string) string {
+		if !strings.HasPrefix(name, prefix) {
+			return ""
+		}
+		return strings.TrimPrefix(name, prefix)
+	})
+}
+
+func discoverProfilesInDir(dir string, profileFromEntry func(string) string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return []string{"default"}, nil
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	profiles := []string{"default"}
+	profiles := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		name := entry.Name()
-		if !entry.IsDir() && strings.HasSuffix(name, ".auth.json") {
-			profile := strings.TrimSuffix(name, ".auth.json")
-			if profile != "default" {
-				profiles = append(profiles, profile)
-			}
+		if !entry.IsDir() {
+			continue
 		}
+		profile := profileFromEntry(entry.Name())
+		if profile == "" || profile == "default" {
+			continue
+		}
+		profiles = append(profiles, profile)
 	}
 	slices.Sort(profiles)
 	return profiles, nil
@@ -632,7 +670,7 @@ func validateProfile(profile string) error {
 	if err := validateProfileName(profile); err != nil {
 		return err
 	}
-	if slices.Contains([]string{"current", "delete", "doctor", "list", "set-default"}, profile) {
+	if slices.Contains([]string{"current", "delete", "doctor", "list", "materialize", "set-default"}, profile) {
 		return fmt.Errorf("reserved profile name: %s", profile)
 	}
 	return nil
@@ -645,57 +683,67 @@ func validateProfileName(profile string) error {
 	return nil
 }
 
-func ensureFile(path string, mode os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, mode)
+func runWithShadowHome(opts options, profile string, codexBinary string, args []string) error {
+	layout, err := resolveShadowHomeLayout(opts, profile)
 	if err != nil {
 		return err
 	}
-	return file.Close()
+	if err := materializeShadowHome(layout); err != nil {
+		return fmt.Errorf("failed to materialize shadow home: %w", err)
+	}
+	authFile := filepath.Join(layout.effectiveHomePath, "auth.json")
+	if err := ensureShadowAuth(authFile); err != nil {
+		return fmt.Errorf("failed to prepare profile auth: %w", err)
+	}
+
+	return runCodexProcess(layout.effectiveHomePath, profile, codexBinary, args)
 }
 
-func emptyFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Size() == 0
-}
-
-func runWithMountedHome(opts options, authFile string, codexBinary string, args []string) error {
-	runtimeDir := filepath.Join(opts.sharedHome, ".profile-runtimes")
-	runtimeDir, err := filepath.Abs(runtimeDir)
-	if err != nil {
+func runMaterialize(cmd *cobra.Command, opts options, args []string) error {
+	if err := canonicalizeOptions(&opts); err != nil {
 		return err
 	}
 
-	sessionDir, err := os.MkdirTemp(runtimeDir, opts.profile+"-")
+	resolved, err := resolveProfile(opts, args, true)
 	if err != nil {
-		if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
-			return err
+		return err
+	}
+	profile := resolved.name
+	if profile == "" {
+		if len(args) > 0 {
+			profile = "default"
+		} else {
+			profile, err = chooseProfile(opts)
+			if err != nil {
+				return err
+			}
 		}
-		sessionDir, err = os.MkdirTemp(runtimeDir, opts.profile+"-")
-		if err != nil {
-			return err
-		}
 	}
-	defer func() {
-		_ = os.RemoveAll(sessionDir)
-	}()
-
-	mountpoint := filepath.Join(sessionDir, "home")
-	if err := os.Mkdir(mountpoint, 0o700); err != nil {
+	if err := validateProfile(profile); err != nil {
+		return err
+	}
+	if profile == "default" {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "default profile uses shared home directly: %s\n", opts.sharedHome)
 		return err
 	}
 
-	server, err := mountProfileHome(mountpoint, opts.sharedHome, authFile)
+	layout, err := resolveShadowHomeLayout(opts, profile)
 	if err != nil {
-		return fmt.Errorf("failed to mount FUSE profile home: %w\ncheck: /dev/fuse exists, fusermount3 is available, NoNewPrivs is 0", err)
+		return err
 	}
-	defer func() {
-		_ = server.Unmount()
-	}()
-
-	return runCodexProcess(mountpoint, codexBinary, args)
+	if err := materializeShadowHome(layout); err != nil {
+		return err
+	}
+	authFile := filepath.Join(layout.effectiveHomePath, "auth.json")
+	if err := ensureShadowAuth(authFile); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", profile, layout.effectiveHomePath)
+	return err
 }
 
-func runCodexProcess(codexHome string, codexBinary string, args []string) error {
+func runCodexProcess(codexHome string, profileName string, codexBinary string, args []string) error {
+	args = maybeInjectCodexProfileOverlay(codexHome, profileName, args)
 	child := exec.Command(codexBinary, args...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
@@ -732,7 +780,6 @@ func runCodexProcess(codexHome string, codexBinary string, args []string) error 
 }
 
 func runDoctor(cmd *cobra.Command, opts options) error {
-	fillDerivedDefaults(&opts)
 	if err := canonicalizeOptions(&opts); err != nil {
 		return err
 	}
@@ -763,42 +810,26 @@ func runDoctor(cmd *cobra.Command, opts options) error {
 		return err
 	}
 
-	fusermountPath, err := exec.LookPath("fusermount3")
-	if err != nil {
-		fusermountPath, err = exec.LookPath("fusermount")
-	}
-	if err := printCheck("fusermount", fusermountPath, err == nil); err != nil {
-		return err
-	}
-
-	if info, err := os.Stat("/dev/fuse"); err == nil {
-		if err := printCheck("/dev/fuse", info.Mode().String(), true); err != nil {
-			return err
-		}
-	} else {
-		if err := printCheck("/dev/fuse", err.Error(), false); err != nil {
-			return err
+	shadowHome := opts.sharedHome
+	shadowOK := true
+	if resolved.name != "" && resolved.name != "default" {
+		layout, layoutErr := resolveShadowHomeLayout(opts, resolved.name)
+		if layoutErr == nil {
+			shadowHome = layout.effectiveHomePath
+			shadowOK = shadowHomeExists(layout)
 		}
 	}
-
-	noNewPrivs := "unknown"
-	if data, err := os.ReadFile("/proc/self/status"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "NoNewPrivs:") {
-				noNewPrivs = strings.TrimSpace(strings.TrimPrefix(line, "NoNewPrivs:"))
-				break
-			}
-		}
-	}
-	if err := printCheck("NoNewPrivs", noNewPrivs, noNewPrivs == "0"); err != nil {
+	if err := printCheck("shadow home", shadowHome, shadowOK || resolved.name == "default"); err != nil {
 		return err
 	}
 
 	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "info\tCODEX_HOME\t%s\n", opts.sharedHome); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "info\tprofile root\t%s\n", opts.profileRoot); err != nil {
-		return err
+	if resolved.name != "" && resolved.name != "default" {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "info\tprofile auth\t%s\n", authPathForProfile(opts, resolved.name)); err != nil {
+			return err
+		}
 	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "info\tcurrent profile\t%s (%s)\n", resolved.name, resolved.source)
 	return err
