@@ -743,7 +743,12 @@ func runMaterialize(cmd *cobra.Command, opts options, args []string) error {
 }
 
 func runCodexProcess(codexHome string, profileName string, codexBinary string, args []string) error {
-	args = maybeInjectCodexProfileOverlay(codexHome, profileName, args)
+	var err error
+	args, err = maybeInjectCodexProfileOverlay(codexHome, profileName, args)
+	if err != nil {
+		return err
+	}
+
 	child := exec.Command(codexBinary, args...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
@@ -765,7 +770,7 @@ func runCodexProcess(codexHome string, profileName string, codexBinary string, a
 		}
 	}()
 
-	err := child.Wait()
+	err = child.Wait()
 	if err == nil {
 		return nil
 	}

@@ -142,9 +142,9 @@ Put profile overlays in the shadow home:
 ```
 
 If that overlay exists, `codex-profiled` automatically passes `--profile <profile>` to
-Codex for supported runtime commands (`exec`, interactive mode, etc.). It skips
-injection when you already pass `--profile` or when the command does not support
-it (e.g. `login`).
+Codex for supported runtime commands (`exec`, interactive mode, etc.). For commands
+that do not support `--profile`, it parses the overlay and appends equivalent
+`--config` overrides instead. It skips injection when you already pass `--profile`.
 
 Use `model_catalog_json` in the overlay to enable model selection in the Codex TUI.
 
