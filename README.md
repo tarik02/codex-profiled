@@ -41,6 +41,9 @@ codex-profiled @work -- --help
 codex-profiled list
 codex-profiled current
 
+# create or refresh shadow-home symlinks without launching codex
+codex-profiled materialize @work
+
 # remember a profile for the current directory
 codex-profiled set-default work
 
@@ -85,21 +88,88 @@ Show what would be used:
 codex-profiled current --verbose
 ```
 
+## Shadow Home Layout
+
+Shared state lives in `CODEX_HOME` (default `~/.codex`).
+
+Each non-default profile gets a persistent shadow home at:
+
+```text
+~/.codex-<profile>/
+```
+
+Example for profile `work`:
+
+```text
+~/.codex/                         # shared home
+~/.codex-work/                    # shadow CODEX_HOME for profile work
+  auth.json                       # real file, profile-private
+  models_cache.json               # real file when present, not symlinked
+  config.toml -> ~/.codex/config.toml
+  sessions -> ~/.codex/sessions
+  history.jsonl -> ~/.codex/history.jsonl
+  log/                            # local runtime dir, not symlinked
+  memories/                       # local runtime dir, not symlinked
+  tmp/                            # local runtime dir, not symlinked
+```
+
+Private entries:
+
+- `auth.json`
+- `models_cache.json`
+
+Shadow-local runtime dirs (never symlinked from shared home):
+
+- `log`
+- `memories`
+- `tmp`
+
+Profile auth lives only in each profile shadow home:
+
+```text
+~/.codex-<profile>/auth.json
+```
+
+On each run, auth stays in the shadow home. It is not copied to or from
+`~/.codex/auth-profiles`.
+
+## Codex config profiles
+
+Put profile overlays in the shadow home:
+
+```text
+~/.codex-<profile>/<profile>.config.toml
+```
+
+If that overlay exists, `codex-profiled` automatically passes `--profile <profile>` to
+Codex for supported runtime commands (`exec`, interactive mode, etc.). It skips
+injection when you already pass `--profile` or when the command does not support
+it (e.g. `login`).
+
+Use `model_catalog_json` in the overlay to enable model selection in the Codex TUI.
+
+Override the shadow root with:
+
+```sh
+export CODEX_SHADOW_ROOT="$HOME/.codex-profiles"
+# -> $CODEX_SHADOW_ROOT/<profile>/
+```
+
 ## Files
 
 By default, profiles are stored under `~/.codex`:
 
 ```text
 ~/.codex/auth.json
-~/.codex/auth-profiles/<profile>.auth.json
 ~/.codex/profile-defaults.toml
+~/.codex-<profile>/
 ```
 
 Useful environment variables:
 
 - `CODEX_HOME`
 - `CODEX_PROFILE`
-- `CODEX_PROFILE_ROOT`
+- `CODEX_SHADOW_ROOT`
 - `CODEX_BINARY`
 
 ## Release
