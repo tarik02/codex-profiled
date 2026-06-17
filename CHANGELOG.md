@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/tarik02/codex-profiled/compare/v1.1.0...v2.0.0) (2026-06-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* profile storage now uses persistent shadow homes
+
+### Features
+
+* replace fuse profiles with shadow homes ([da2afea](https://github.com/tarik02/codex-profiled/commit/da2afea4f79558ccc70728853fb8e3769850e5ab))
+
 ## [1.1.0](https://github.com/tarik02/codex-profiled/compare/v1.0.0...v1.1.0) (2026-05-16)
 
 
