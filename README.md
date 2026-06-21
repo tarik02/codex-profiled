@@ -9,6 +9,7 @@ shared; account auth stays isolated per profile.
 ## Install
 
 Download binaries from [GitHub Releases](https://github.com/tarik02/codex-profiled/releases).
+Windows, Linux, and WSL are supported.
 
 ```sh
 nix run github:tarik02/codex-profiled
@@ -41,7 +42,7 @@ codex-profiled @work -- --help
 codex-profiled list
 codex-profiled current
 
-# create or refresh shadow-home symlinks without launching codex
+# create or refresh shadow-home links without launching codex
 codex-profiled materialize @work
 
 # remember a profile for the current directory
@@ -90,12 +91,19 @@ codex-profiled current --verbose
 
 ## Shadow Home Layout
 
-Shared state lives in `CODEX_HOME` (default `~/.codex`).
+Shared state lives in `CODEX_HOME` (default `~/.codex`, or
+`%USERPROFILE%\.codex` on Windows).
 
 Each non-default profile gets a persistent shadow home at:
 
 ```text
 ~/.codex-<profile>/
+```
+
+On Windows, the default profile path is:
+
+```text
+%USERPROFILE%\.codex-<profile>\
 ```
 
 Example for profile `work`:
@@ -112,6 +120,10 @@ Example for profile `work`:
   memories/                       # local runtime dir, not symlinked
   tmp/                            # local runtime dir, not symlinked
 ```
+
+On Unix and on Windows systems where symlinks are available, shared entries are
+created as symlinks. On Windows, if symlink creation is blocked, directories use
+junctions and files use hard links.
 
 Private entries:
 
@@ -155,6 +167,13 @@ export CODEX_SHADOW_ROOT="$HOME/.codex-profiles"
 # -> $CODEX_SHADOW_ROOT/<profile>/
 ```
 
+PowerShell:
+
+```powershell
+$env:CODEX_SHADOW_ROOT = "$env:USERPROFILE\.codex-profiles"
+# -> $env:CODEX_SHADOW_ROOT\<profile>\
+```
+
 ## Files
 
 By default, profiles are stored under `~/.codex`:
@@ -163,6 +182,14 @@ By default, profiles are stored under `~/.codex`:
 ~/.codex/auth.json
 ~/.codex/profile-defaults.toml
 ~/.codex-<profile>/
+```
+
+On Windows, profiles are stored under `%USERPROFILE%` by default:
+
+```text
+%USERPROFILE%\.codex\auth.json
+%USERPROFILE%\.codex\profile-defaults.toml
+%USERPROFILE%\.codex-<profile>\
 ```
 
 Useful environment variables:

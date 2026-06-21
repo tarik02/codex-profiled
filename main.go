@@ -7,9 +7,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/charmbracelet/huh"
 	"github.com/pelletier/go-toml/v2"
@@ -49,6 +49,7 @@ func rootCommand() *cobra.Command {
 	listVerbose := false
 	currentVerbose := false
 	deleteYes := false
+	forwardVersion := false
 
 	root := &cobra.Command{
 		Use:           "codex-profiled [@profile] [--] [codex args...]",
@@ -57,12 +58,16 @@ func rootCommand() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if forwardVersion {
+				return runCodex(cmd, opts, []string{"--version"}, false)
+			}
 			return runCodex(cmd, opts, args, true)
 		},
 	}
 
 	root.PersistentFlags().StringVarP(&opts.profile, "profile", "p", opts.profile, "profile name")
 	root.PersistentFlags().StringVar(&opts.codexBinary, "codex-binary", opts.codexBinary, "codex executable")
+	root.PersistentFlags().BoolVar(&forwardVersion, "version", false, "show Codex version")
 
 	list := &cobra.Command{
 		Use:   "list",
@@ -210,7 +215,7 @@ func rootCommand() *cobra.Command {
 
 	materialize := &cobra.Command{
 		Use:   "materialize [@profile]",
-		Short: "Create or refresh the profile shadow home symlinks",
+		Short: "Create or refresh the profile shadow home links",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMaterialize(cmd, opts, args)
@@ -218,7 +223,48 @@ func rootCommand() *cobra.Command {
 	}
 
 	root.AddCommand(list, current, setDefault, deleteProfile, doctor, materialize)
+	for _, name := range codexPassthroughCommands() {
+		root.AddCommand(codexPassthroughCommand(name, &opts))
+	}
 	return root
+}
+
+func codexPassthroughCommands() []string {
+	return []string{
+		"app",
+		"app-server",
+		"apply",
+		"cloud",
+		"debug",
+		"exec",
+		"exec-server",
+		"features",
+		"fork",
+		"login",
+		"logout",
+		"mcp",
+		"mcp-server",
+		"plugin",
+		"remote-control",
+		"resume",
+		"review",
+		"sandbox",
+		"update",
+	}
+}
+
+func codexPassthroughCommand(name string, opts *options) *cobra.Command {
+	return &cobra.Command{
+		Use:                name,
+		Short:              "Forward to codex " + name,
+		Args:               cobra.ArbitraryArgs,
+		DisableFlagParsing: true,
+		SilenceErrors:      true,
+		SilenceUsage:       true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCodex(cmd, *opts, append([]string{name}, args...), false)
+		},
+	}
 }
 
 func defaultOptions() options {
@@ -677,10 +723,22 @@ func validateProfile(profile string) error {
 }
 
 func validateProfileName(profile string) error {
-	if profile == "" || profile == "." || profile == ".." || strings.TrimSpace(profile) == "" || strings.ContainsRune(profile, filepath.Separator) {
+	if profile == "" || profile == "." || profile == ".." || strings.TrimSpace(profile) == "" {
 		return fmt.Errorf("invalid profile name")
 	}
+	for _, r := range profile {
+		if invalidProfileRune(r) {
+			return fmt.Errorf("invalid profile name")
+		}
+	}
 	return nil
+}
+
+func invalidProfileRune(r rune) bool {
+	if r < 0x20 {
+		return true
+	}
+	return strings.ContainsRune(`/\<>:"|?*`, r)
 }
 
 func runWithShadowHome(opts options, profile string, codexBinary string, args []string) error {
@@ -753,14 +811,14 @@ func runCodexProcess(codexHome string, profileName string, codexBinary string, a
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
-	child.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
+	child.Env = appendEnvOverride(os.Environ(), "CODEX_HOME", codexHome)
 
 	if err := child.Start(); err != nil {
 		return err
 	}
 
 	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(signals, forwardedSignals()...)
 	defer signal.Stop(signals)
 	go func() {
 		for sig := range signals {
@@ -777,11 +835,31 @@ func runCodexProcess(codexHome string, profileName string, codexBinary string, a
 
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {
-		if status, ok := exitError.Sys().(syscall.WaitStatus); ok {
-			return exitStatusError(status.ExitStatus())
-		}
+		return exitStatusError(exitError.ExitCode())
 	}
 	return err
+}
+
+func appendEnvOverride(env []string, name, value string) []string {
+	prefix := name + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if envNameMatches(entry, prefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return append(filtered, prefix+value)
+}
+
+func envNameMatches(entry, prefix string) bool {
+	if len(entry) < len(prefix) {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(entry[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(entry, prefix)
 }
 
 func runDoctor(cmd *cobra.Command, opts options) error {

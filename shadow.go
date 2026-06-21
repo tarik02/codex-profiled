@@ -4,8 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"syscall"
 )
 
@@ -45,6 +48,8 @@ var (
 
 	emptyAuthJSON = []byte("{}")
 )
+
+const windowsErrorNotAReparsePoint syscall.Errno = 4390
 
 type linkState int
 
@@ -199,9 +204,17 @@ func isNotSymlinkError(err error) bool {
 	if errors.Is(err, syscall.EINVAL) {
 		return true
 	}
+	if runtime.GOOS == "windows" && errors.Is(err, windowsErrorNotAReparsePoint) {
+		return true
+	}
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) {
-		return errors.Is(pathErr.Err, syscall.EINVAL)
+		if errors.Is(pathErr.Err, syscall.EINVAL) {
+			return true
+		}
+		if runtime.GOOS == "windows" && errors.Is(pathErr.Err, windowsErrorNotAReparsePoint) {
+			return true
+		}
 	}
 	return false
 }
@@ -229,9 +242,12 @@ func ensureSharedSymlink(shadowPath, sharedPath, entryName string) error {
 
 	switch state {
 	case linkNotSymlink:
+		if sameFilesystemEntry(link, target) {
+			return nil
+		}
 		return fmt.Errorf("cannot create shadow home because %q already exists and is not a symlink", link)
 	case linkMissing:
-		return os.Symlink(target, link)
+		return createSharedLink(target, link)
 	case linkSymlink:
 		resolvedExisting := filepath.Clean(filepath.Join(filepath.Dir(link), existingTarget))
 		if resolvedExisting == filepath.Clean(target) {
@@ -240,10 +256,48 @@ func ensureSharedSymlink(shadowPath, sharedPath, entryName string) error {
 		if err := os.Remove(link); err != nil {
 			return err
 		}
-		return os.Symlink(target, link)
+		return createSharedLink(target, link)
 	default:
 		return fmt.Errorf("unexpected link state for %q", link)
 	}
+}
+
+func sameFilesystemEntry(pathA, pathB string) bool {
+	infoA, err := os.Stat(pathA)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(pathB)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(infoA, infoB)
+}
+
+func createSharedLink(target, link string) error {
+	if err := os.Symlink(target, link); err == nil {
+		return nil
+	} else if runtime.GOOS != "windows" {
+		return err
+	}
+
+	info, statErr := os.Stat(target)
+	if statErr != nil {
+		return statErr
+	}
+	if info.IsDir() {
+		return createWindowsDirectoryJunction(target, link)
+	}
+	return os.Link(target, link)
+}
+
+func createWindowsDirectoryJunction(target, link string) error {
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create directory junction: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func ensureShadowAuthIsPrivate(shadowPath string) error {
