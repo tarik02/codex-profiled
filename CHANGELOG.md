@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Features
-
-* add Windows support
-
 ## [2.0.0](https://github.com/tarik02/codex-profiled/compare/v1.1.0...v2.0.0) (2026-06-17)
 
 
