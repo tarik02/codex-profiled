@@ -335,7 +335,6 @@ func isFileInUseError(err error) bool {
 		runtime.GOOS == "windows" &&
 		errors.Is(pathErr.Err, windowsErrorSharingViolation)
 }
-
 func createSharedLink(target, link string) error {
 	if err := os.Symlink(target, link); err == nil {
 		return nil
