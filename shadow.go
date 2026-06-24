@@ -49,7 +49,10 @@ var (
 	emptyAuthJSON = []byte("{}")
 )
 
-const windowsErrorNotAReparsePoint syscall.Errno = 4390
+const (
+	windowsErrorSharingViolation syscall.Errno = 32
+	windowsErrorNotAReparsePoint syscall.Errno = 4390
+)
 
 type linkState int
 
@@ -130,6 +133,9 @@ func materializeShadowHome(layout shadowHomeLayout) error {
 		if _, private := privateEntryNames[name]; private {
 			continue
 		}
+		if isSQLiteSidecarName(name) {
+			continue
+		}
 		if _, local := shadowLocalEntryNames[name]; local {
 			continue
 		}
@@ -146,6 +152,11 @@ func materializeShadowHome(layout shadowHomeLayout) error {
 			}
 		}
 		entries[name] = struct{}{}
+		if isSQLiteDatabaseName(name) && !entry.IsDir() {
+			for _, sidecarName := range sqliteSidecarNames(name) {
+				entries[sidecarName] = struct{}{}
+			}
+		}
 	}
 
 	if err := removePrivateSymlink(layout.effectiveHomePath, "models_cache.json"); err != nil {
@@ -163,6 +174,10 @@ func materializeShadowHome(layout shadowHomeLayout) error {
 	}
 	slices.Sort(names)
 
+	if err := ensureSharedSQLiteSidecars(layout.sharedHomePath, names); err != nil {
+		return err
+	}
+
 	for _, name := range names {
 		if _, private := privateEntryNames[name]; private {
 			continue
@@ -176,6 +191,34 @@ func materializeShadowHome(layout shadowHomeLayout) error {
 	}
 
 	return ensureShadowAuthIsPrivate(layout.effectiveHomePath)
+}
+
+func isSQLiteDatabaseName(name string) bool {
+	return strings.HasSuffix(name, ".sqlite")
+}
+
+func isSQLiteSidecarName(name string) bool {
+	return strings.HasSuffix(name, ".sqlite-shm") || strings.HasSuffix(name, ".sqlite-wal")
+}
+
+func sqliteSidecarNames(name string) []string {
+	return []string{name + "-shm", name + "-wal"}
+}
+
+func ensureSharedSQLiteSidecars(sharedPath string, names []string) error {
+	for _, name := range names {
+		if !isSQLiteSidecarName(name) {
+			continue
+		}
+		file, err := os.OpenFile(filepath.Join(sharedPath, name), os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func shadowHomeExists(layout shadowHomeLayout) bool {
@@ -245,6 +288,15 @@ func ensureSharedSymlink(shadowPath, sharedPath, entryName string) error {
 		if sameFilesystemEntry(link, target) {
 			return nil
 		}
+		if isSQLiteSidecarName(entryName) {
+			if err := os.Remove(link); err != nil {
+				if isFileInUseError(err) {
+					return fmt.Errorf("cannot replace local sqlite sidecar %q while it is in use; stop running Codex processes for this profile and retry: %w", link, err)
+				}
+				return err
+			}
+			return createSharedLink(target, link)
+		}
 		return fmt.Errorf("cannot create shadow home because %q already exists and is not a symlink", link)
 	case linkMissing:
 		return createSharedLink(target, link)
@@ -272,6 +324,16 @@ func sameFilesystemEntry(pathA, pathB string) bool {
 		return false
 	}
 	return os.SameFile(infoA, infoB)
+}
+
+func isFileInUseError(err error) bool {
+	if runtime.GOOS == "windows" && errors.Is(err, windowsErrorSharingViolation) {
+		return true
+	}
+	var pathErr *os.PathError
+	return errors.As(err, &pathErr) &&
+		runtime.GOOS == "windows" &&
+		errors.Is(pathErr.Err, windowsErrorSharingViolation)
 }
 
 func createSharedLink(target, link string) error {
