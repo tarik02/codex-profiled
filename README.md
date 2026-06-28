@@ -204,7 +204,8 @@ Useful environment variables:
 Releases are managed by release-please and GoReleaser.
 
 Use conventional commits on `master`; release-please opens a release PR. Merging
-that PR creates the next version and publishes release artifacts.
+that PR creates the next version and publishes release artifacts for Linux,
+macOS, and Windows.
 
 ## License
 
