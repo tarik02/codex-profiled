@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.1](https://github.com/tarik02/codex-profiled/compare/v2.1.0...v2.1.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* add macOS artifacts to releases ([#12](https://github.com/tarik02/codex-profiled/issues/12)) ([e9dc3fb](https://github.com/tarik02/codex-profiled/commit/e9dc3fbd0febeb581796a20c52c9337038ce42d0))
+* share sqlite sidecars across shadow homes ([#10](https://github.com/tarik02/codex-profiled/issues/10)) ([b0cb380](https://github.com/tarik02/codex-profiled/commit/b0cb380dc26a2d8c4baed7bcfcfff66321cf46a6))
+
 ## [2.1.0](https://github.com/tarik02/codex-profiled/compare/v2.0.0...v2.1.0) (2026-06-21)
 
 
